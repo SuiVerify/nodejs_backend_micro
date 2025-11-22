@@ -1,0 +1,44 @@
+{
+  "network": "testnet",
+  "contracts": {
+    "packageId": "0xac8705fa3257db9641ba4ff340060984f42124cc2dfab9903d7505323c0080a3",
+    "paymentRegistry": {
+      "objectId": "0xf9f37bcd05810d2929e2446d498c63a218b3d18c73227e7964ffae936000830d",
+      "initialSharedVersion": "660836882"
+    },
+    "paymentCap": {
+      "objectId": "0x4a7cee5cddeef2bc33679880e1ef779f4c8077e1b20e1e3beee9e8644ecf9f8a"
+    },
+    "clock": {
+      "objectId": "0x0000000000000000000000000000000000000000000000000000000000000006"
+    }
+  },
+  "protocol": {
+    "name": "test",
+    "uid": 1000,
+    "address": "0xaa266beb057eeba4f686ef40ab0a8b96da69922fa4f548f2828c441b74398046",
+    "vault": {
+      "objectId": "0x000b0127fe611a68526c71d7335c9151cf18abe27711a4a7993ff8cea13556d5",
+      "initialSharedVersion": "661164052",
+      "balance": "6000000"
+    }
+  },
+  "transactions": {
+    "registerProtocol": {
+      "digest": "fMVtSF3sqkCcTK2RQDyxPSE7TvHGRRXGZyRFbZgzVds",
+      "timestamp": "1763739675708",
+      "initialAmount": "3000000"
+    },
+    "fundVault": {
+      "digest": "DVP7PvkcPKJ7GCnrJmHc8k8BqF7y7eqqDPuNXkMAUswo",
+      "timestamp": "1763739873543",
+      "amount": "3000000",
+      "newBalance": "6000000"
+    }
+  },
+  "constants": {
+    "settlementFee": 3000000,
+    "minVaultAmount": 3000000,
+    "mistPerSui": 1000000000
+  }
+}
