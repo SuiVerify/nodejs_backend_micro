@@ -11,84 +11,174 @@ import {
   storeSettlement,
   isNftSettled,
   getSettlementByNftId,
+  getSettlementsByUser,
+  getSettlementById,
+  getAllSettlements,
   SettlementRecord,
 } from '../services/database.service';
+import protocolConfig from '../../data/protocol-config.json';
 
-// Settlement request interface
+// Settlement request interface - all data from frontend
 interface SettlementRequest {
-  nftId: string;
-  nftName?: string;
+  // Enclave verification tx digest (from ZK verification)
+  enclaveTxDigest: string;
+  // DID NFT that was verified
+  didVerifiedId: string;
+  didNftName?: string;
+  // User who completed verification
+  userAddress: string;
 }
 
-// Validate NFT ID format (0x + 64 hex characters)
-function isValidNftId(nftId: string): boolean {
-  return /^0x[a-fA-F0-9]{64}$/.test(nftId);
+// Validate Sui object ID format (0x + 64 hex characters)
+function isValidSuiId(id: string): boolean {
+  return /^0x[a-fA-F0-9]{64}$/.test(id);
+}
+
+// Validate Sui tx digest format (base58, typically 43-44 chars)
+function isValidTxDigest(digest: string): boolean {
+  return /^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(digest);
 }
 
 // Settle NFT payment on-chain
 export async function settleNftPayment(req: Request, res: Response): Promise<void> {
   try {
-    const { nftId, nftName } = req.body as SettlementRequest;
+    const { enclaveTxDigest, didVerifiedId, didNftName, userAddress } = req.body as SettlementRequest;
 
     // Validate required fields
-    if (!nftId) {
+    if (!enclaveTxDigest) {
       res.status(400).json({
         success: false,
-        error: 'nftId is required',
+        error: 'enclaveTxDigest is required',
       });
       return;
     }
 
-    // Validate NFT ID format
-    if (!isValidNftId(nftId)) {
+    if (!didVerifiedId) {
       res.status(400).json({
         success: false,
-        error: 'Invalid nftId format. Expected 0x + 64 hex characters',
+        error: 'didVerifiedId is required',
       });
       return;
     }
 
-    // Check if NFT is already settled
-    const alreadySettled = await isNftSettled(nftId);
+    if (!userAddress) {
+      res.status(400).json({
+        success: false,
+        error: 'userAddress is required',
+      });
+      return;
+    }
+
+    // Validate DID NFT ID format
+    if (!isValidSuiId(didVerifiedId)) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid didVerifiedId format. Expected 0x + 64 hex characters',
+      });
+      return;
+    }
+
+    // Validate user address format
+    if (!isValidSuiId(userAddress)) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid userAddress format. Expected 0x + 64 hex characters',
+      });
+      return;
+    }
+
+    // Validate enclave tx digest format
+    if (!isValidTxDigest(enclaveTxDigest)) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid enclaveTxDigest format. Expected base58 transaction digest',
+      });
+      return;
+    }
+
+    // Check if DID NFT is already settled
+    const alreadySettled = await isNftSettled(didVerifiedId);
     if (alreadySettled) {
-      const existingSettlement = await getSettlementByNftId(nftId);
+      const existingSettlement = await getSettlementByNftId(didVerifiedId);
       res.status(409).json({
         success: false,
-        error: 'NFT has already been settled',
+        error: 'DID NFT has already been settled',
         data: existingSettlement,
       });
       return;
     }
 
-    console.log(`Processing settlement for NFT: ${nftId}`);
+    console.log(`\n=== Processing Settlement ===`);
+    console.log(`Enclave TX: ${enclaveTxDigest}`);
+    console.log(`DID NFT: ${didVerifiedId}`);
+    console.log(`User: ${userAddress}`);
 
     // Build the transaction
     const tx = new Transaction();
 
-    // Call settle_nft_payment_with_vault
-    // Function signature: settle_nft_payment_with_vault(
-    //   registry: &mut PaymentRegistry,
-    //   cap: &PaymentCap,
-    //   vault: &mut ProtocolVault,
-    //   nft_id: ID,
-    //   clock: &Clock,
-    // )
+    // ============================================================
+    // OPTION 1: settle_nft_payment (NO fund transfer, just marks settled)
+    // Uncomment below if you want to use this instead
+    // ============================================================
+    // tx.moveCall({
+    //   target: `${CONTRACT_CONFIG.packageId}::payment::settle_nft_payment`,
+    //   arguments: [
+    //     // Arg0: &mut PaymentRegistry (shared object)
+    //     tx.sharedObjectRef({
+    //       objectId: CONTRACT_CONFIG.paymentRegistry.objectId,
+    //       initialSharedVersion: CONTRACT_CONFIG.paymentRegistry.initialSharedVersion,
+    //       mutable: true,
+    //     }),
+    //     // Arg1: &PaymentCap (owned object)
+    //     tx.object(CONTRACT_CONFIG.paymentCap.objectId),
+    //     // Arg2: u64 (protocol_uid)
+    //     tx.pure.u64(CONTRACT_CONFIG.protocol.uid),
+    //     // Arg3: ID (nft_id) - pass as address type
+    //     tx.pure.address(didVerifiedId),
+    //     // Arg4: String (nft_name)
+    //     tx.pure.string(didNftName || 'Unknown NFT'),
+    //     // Arg5: &Clock (shared object, immutable)
+    //     tx.sharedObjectRef({
+    //       objectId: CONTRACT_CONFIG.clock.objectId,
+    //       initialSharedVersion: '1',
+    //       mutable: false,
+    //     }),
+    //   ],
+    // });
+
+    // ============================================================
+    // OPTION 2: settle_nft_payment_with_vault (WITH fund transfer)
+    // Transfers settlement fee from protocol vault to SuiVerify treasury
+    // ============================================================
     tx.moveCall({
-      target: `${CONTRACT_CONFIG.packageId}::payment::${CONTRACT_FUNCTIONS.settleNftPaymentWithVault}`,
+      target: `${CONTRACT_CONFIG.packageId}::payment::settle_nft_payment_with_vault`,
       arguments: [
+        // Arg0: &mut PaymentRegistry (shared object)
         tx.sharedObjectRef({
           objectId: CONTRACT_CONFIG.paymentRegistry.objectId,
           initialSharedVersion: CONTRACT_CONFIG.paymentRegistry.initialSharedVersion,
           mutable: true,
         }),
+        // Arg1: &PaymentCap (owned object)
         tx.object(CONTRACT_CONFIG.paymentCap.objectId),
+        // Arg2: &mut ProtocolVault (shared object)
         tx.sharedObjectRef({
           objectId: CONTRACT_CONFIG.protocol.vault.objectId,
           initialSharedVersion: CONTRACT_CONFIG.protocol.vault.initialSharedVersion,
           mutable: true,
         }),
-        tx.pure.id(nftId),
-        tx.object(CONTRACT_CONFIG.clock.objectId),
+        // Arg3: u64 (protocol_uid)
+        tx.pure.u64(CONTRACT_CONFIG.protocol.uid),
+        // Arg4: ID (nft_id) - pass as address type
+        tx.pure.address(didVerifiedId),
+        // Arg5: String (nft_name)
+        tx.pure.string(didNftName || 'Unknown NFT'),
+        // Arg6: &Clock (shared object, immutable)
+        tx.sharedObjectRef({
+          objectId: CONTRACT_CONFIG.clock.objectId,
+          initialSharedVersion: '1',
+          mutable: false,
+        }),
       ],
     });
 
@@ -103,7 +193,7 @@ export async function settleNftPayment(req: Request, res: Response): Promise<voi
       },
     });
 
-    console.log(`Transaction executed: ${result.digest}`);
+    console.log(`Payment TX: ${result.digest}`);
 
     // Check transaction status
     const status = result.effects?.status?.status;
@@ -118,29 +208,44 @@ export async function settleNftPayment(req: Request, res: Response): Promise<voi
       return;
     }
 
-    // Store settlement in database
+    // Store complete settlement record in database
     const settlementRecord: SettlementRecord = {
-      tx_digest: result.digest,
+      // Enclave verification
+      enclave_tx_digest: enclaveTxDigest,
+      // DID NFT
+      did_verified_id: didVerifiedId,
+      did_nft_name: didNftName,
+      // Protocol info
       protocol_uid: CONTRACT_CONFIG.protocol.uid,
-      nft_id: nftId,
-      nft_name: nftName,
+      protocol_name: protocolConfig.protocol.name,
       protocol_address: CONTRACT_CONFIG.protocol.address,
+      // User info
+      user_address: userAddress,
+      // Payment settlement
+      payment_tx_digest: result.digest,
       settlement_amount: CONTRACT_CONFIG.constants.settlementFee,
+      // Metadata
       timestamp: Date.now(),
       status: 'success',
     };
 
     await storeSettlement(settlementRecord);
     console.log('Settlement stored in database');
+    console.log(`=== Settlement Complete ===\n`);
 
-    // Return success response
+    // Return success response with all data
     res.status(200).json({
       success: true,
       message: 'NFT payment settled successfully',
       data: {
-        digest: result.digest,
-        nftId,
+        enclaveTxDigest,
+        didVerifiedId,
+        didNftName,
         protocolUid: CONTRACT_CONFIG.protocol.uid,
+        protocolName: protocolConfig.protocol.name,
+        protocolAddress: CONTRACT_CONFIG.protocol.address,
+        userAddress,
+        paymentTxDigest: result.digest,
         settlementAmount: CONTRACT_CONFIG.constants.settlementFee,
         explorerUrl: `https://suiscan.xyz/testnet/tx/${result.digest}`,
       },
@@ -154,7 +259,7 @@ export async function settleNftPayment(req: Request, res: Response): Promise<voi
   }
 }
 
-// Check settlement status for an NFT
+// Check settlement status for a DID NFT
 export async function getSettlementStatus(req: Request, res: Response): Promise<void> {
   try {
     const { nftId } = req.params;
@@ -179,11 +284,40 @@ export async function getSettlementStatus(req: Request, res: Response): Promise<
       res.status(200).json({
         success: true,
         settled: false,
-        message: 'NFT has not been settled',
+        message: 'DID NFT has not been settled',
       });
     }
   } catch (error) {
     console.error('Error checking settlement status:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Internal server error',
+    });
+  }
+}
+
+// Get settlements by user address
+export async function getUserSettlements(req: Request, res: Response): Promise<void> {
+  try {
+    const { userAddress } = req.params;
+
+    if (!userAddress) {
+      res.status(400).json({
+        success: false,
+        error: 'userAddress is required',
+      });
+      return;
+    }
+
+    const settlements = await getSettlementsByUser(userAddress);
+
+    res.status(200).json({
+      success: true,
+      count: settlements.length,
+      data: settlements,
+    });
+  } catch (error) {
+    console.error('Error getting user settlements:', error);
     res.status(500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Internal server error',
@@ -199,6 +333,122 @@ export async function healthCheck(req: Request, res: Response): Promise<void> {
     adminAddress,
     packageId: CONTRACT_CONFIG.packageId,
     protocolUid: CONTRACT_CONFIG.protocol.uid,
+    protocolName: protocolConfig.protocol.name,
     timestamp: new Date().toISOString(),
   });
+}
+
+// Get single settlement by database ID
+export async function getSingleSettlement(req: Request, res: Response): Promise<void> {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      res.status(400).json({
+        success: false,
+        error: 'id is required',
+      });
+      return;
+    }
+
+    const numericId = parseInt(id, 10);
+    if (isNaN(numericId) || numericId < 1) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid id format. Expected positive integer',
+      });
+      return;
+    }
+
+    const settlement = await getSettlementById(numericId);
+
+    if (settlement) {
+      res.status(200).json({
+        success: true,
+        data: settlement,
+      });
+    } else {
+      res.status(404).json({
+        success: false,
+        error: `Settlement with id ${numericId} not found`,
+      });
+    }
+  } catch (error) {
+    console.error('Error getting settlement by id:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Internal server error',
+    });
+  }
+}
+
+// Get all settlements (with optional pagination)
+// Query params: limit, page (or offset)
+export async function getBulkSettlements(req: Request, res: Response): Promise<void> {
+  try {
+    const { limit, page, offset } = req.query;
+
+    let queryLimit: number | undefined;
+    let queryOffset: number | undefined;
+
+    // Parse limit
+    if (limit !== undefined) {
+      queryLimit = parseInt(limit as string, 10);
+      if (isNaN(queryLimit) || queryLimit < 1) {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid limit. Expected positive integer',
+        });
+        return;
+      }
+    }
+
+    // Parse offset (either direct offset or calculated from page)
+    if (offset !== undefined) {
+      queryOffset = parseInt(offset as string, 10);
+      if (isNaN(queryOffset) || queryOffset < 0) {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid offset. Expected non-negative integer',
+        });
+        return;
+      }
+    } else if (page !== undefined && queryLimit !== undefined) {
+      const pageNum = parseInt(page as string, 10);
+      if (isNaN(pageNum) || pageNum < 1) {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid page. Expected positive integer',
+        });
+        return;
+      }
+      queryOffset = (pageNum - 1) * queryLimit;
+    }
+
+    const result = await getAllSettlements({
+      limit: queryLimit,
+      offset: queryOffset,
+    });
+
+    res.status(200).json({
+      success: true,
+      total: result.total,
+      count: result.settlements.length,
+      ...(queryLimit !== undefined && {
+        pagination: {
+          limit: queryLimit,
+          offset: queryOffset || 0,
+          page: queryOffset !== undefined && queryLimit ? Math.floor(queryOffset / queryLimit) + 1 : 1,
+          totalPages: queryLimit ? Math.ceil(result.total / queryLimit) : 1,
+        },
+      }),
+      data: result.settlements,
+    });
+  } catch (error) {
+    console.error('Error getting all settlements:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Internal server error',
+    });
+  }
 }
