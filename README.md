@@ -4,33 +4,108 @@ Node.js backend microservice for NFT payment settlement on Sui blockchain.
 
 ## Overview
 
-This microservice handles the `settle_nft_payment_with_vault` function call to the SuiVerify payment contract. When an NFT verification is complete, this service:
+This microservice handles NFT settlement after ZK verification is complete. When a user verifies their identity through the SuiVerify system, this backend:
 
-1. Receives NFT settlement request
-2. Builds and signs a transaction to settle the NFT payment
-3. Executes the transaction on Sui testnet
-4. Stores the transaction digest in PostgreSQL
+1. Receives settlement request with verification details
+2. Calls `settle_nft_payment` on the Sui blockchain
+3. Records the settlement in PostgreSQL database
+4. Returns transaction details to the frontend
+
+## Architecture Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           SuiVerify Settlement Flow                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────┐     ┌──────────────┐     ┌─────────────────┐     ┌─────────────┐
+│  User    │────▶│   Frontend   │────▶│  This Backend   │────▶│ Sui Network │
+│  (DID)   │     │  (zkLogin)   │     │  (settlement)   │     │  (testnet)  │
+└──────────┘     └──────────────┘     └─────────────────┘     └─────────────┘
+     │                  │                      │                      │
+     │  1. ZK Verify    │                      │                      │
+     │─────────────────▶│                      │                      │
+     │                  │  2. Enclave TX       │                      │
+     │                  │  returns digest      │                      │
+     │                  │◀─────────────────────│                      │
+     │                  │                      │                      │
+     │                  │  3. POST /settle     │                      │
+     │                  │─────────────────────▶│                      │
+     │                  │                      │  4. settle_nft_payment
+     │                  │                      │─────────────────────▶│
+     │                  │                      │                      │
+     │                  │                      │  5. TX Success       │
+     │                  │                      │◀─────────────────────│
+     │                  │                      │                      │
+     │                  │  6. Settlement       │  7. Store in DB      │
+     │                  │     Response         │─────────┐            │
+     │                  │◀─────────────────────│         ▼            │
+     │                  │                      │   ┌──────────┐       │
+     │  8. Show Result  │                      │   │ Postgres │       │
+     │◀─────────────────│                      │   └──────────┘       │
+     │                  │                      │                      │
+```
+
+## Smart Contract Functions
+
+The deployed contract (`0xac8705fa...`) has two settlement functions:
+
+### 1. `settle_nft_payment` (Currently Used)
+
+Marks NFT as settled and emits event. Does NOT transfer funds from vault.
+
+```move
+entry settle_nft_payment(
+    registry: &mut PaymentRegistry,  // Shared object
+    cap: &PaymentCap,                // Admin capability (owned)
+    protocol_uid: u64,               // Protocol ID (1000)
+    nft_id: ID,                      // DID NFT being settled
+    nft_name: String,                // NFT name for event
+    clock: &Clock                    // System clock
+)
+```
+
+**Use Case:** When you want to record settlement without moving funds from vault.
+
+### 2. `settle_nft_payment_with_vault` (Alternative)
+
+Marks NFT as settled AND transfers settlement fee from protocol vault to SuiVerify treasury.
+
+```move
+entry settle_nft_payment_with_vault(
+    registry: &mut PaymentRegistry,  // Shared object
+    cap: &PaymentCap,                // Admin capability (owned)
+    vault: &mut ProtocolVault,       // Protocol's vault (shared)
+    protocol_uid: u64,               // Protocol ID (1000)
+    nft_id: ID,                      // DID NFT being settled
+    nft_name: String,                // NFT name for event
+    clock: &Clock                    // System clock
+)
+```
+
+**Use Case:** When you want to charge the protocol for each verification.
 
 ## Project Structure
 
 ```
 nodejs_backend_micro/
 ├── data/
-│   └── protocol-config.json    # Hardcoded contract addresses & protocol config
+│   └── protocol-config.json    # Contract addresses & protocol config
 ├── src/
 │   ├── config/
-│   │   └── sui.config.js       # Sui client & contract configuration
+│   │   └── sui.config.ts       # Sui client & keypair setup
 │   ├── controllers/
-│   │   └── settlement.controller.js  # Settlement business logic
+│   │   └── settlement.controller.ts  # Settlement logic & TX building
 │   ├── routes/
-│   │   └── settlement.routes.js      # API route definitions
+│   │   └── settlement.routes.ts      # API routes
 │   ├── services/
-│   │   └── database.service.js       # PostgreSQL operations
-│   ├── app.js                  # Express app setup
-│   └── server.js               # Server entry point
-├── .env                        # Environment variables (not committed)
-├── .env.example                # Example environment variables
-└── package.json
+│   │   └── database.service.ts       # PostgreSQL operations
+│   ├── app.ts                  # Express app setup
+│   └── server.ts               # Server entry point
+├── .env                        # Environment variables
+├── .env.example                # Example env file
+├── package.json
+└── tsconfig.json
 ```
 
 ## Setup
@@ -43,18 +118,19 @@ npm install
 
 ### 2. Configure Environment Variables
 
-Edit `.env` file with your credentials:
+Create `.env` file:
 
 ```env
 # Sui Network
 SUI_NETWORK=testnet
 SUI_RPC_URL=https://fullnode.testnet.sui.io:443
 
-# Admin Private Key (wallet that owns PaymentCap)
-ADMIN_PRIVATE_KEY=your_private_key_here
+# Admin Private Key (must be protocol owner address)
+# This wallet owns PaymentCap and is registered as protocol owner
+ADMIN_PRIVATE_KEY=suiprivkey1qplqtjp2mngg67u3dw40r6h99am8y9hsypfanng2td3lpd36sfgygz6gh39
 
-# PostgreSQL Database
-DATABASE_URL=postgresql://user:password@host:5432/database
+# PostgreSQL Database (Supabase)
+DATABASE_URL=postgresql://postgres:password@db.xxx.supabase.co:5432/postgres
 
 # Server
 PORT=3001
@@ -64,39 +140,62 @@ NODE_ENV=development
 ### 3. Run the Server
 
 ```bash
-# Development mode (with hot reload)
+# Development mode
 npm run dev
 
 # Production mode
-npm start
+npm run build && npm start
 ```
 
 ## API Endpoints
 
 ### POST `/api/settlement/settle`
 
-Settle an NFT payment on-chain.
+Settle an NFT payment after ZK verification.
 
 **Request Body:**
 ```json
 {
-  "nftId": "0x1234567890abcdef...",
-  "nftName": "Age Verification NFT"
+  "enclaveTxDigest": "BHKjhBHFyvZZPjpSxLCR5MqHCjKxHPJvqxKQHKjV9H9V",
+  "didVerifiedId": "0x35849ea49b6e4abfd3628d33cca0c6a3a5ba05c05e0aa1f6d52cf3105cfd2f10",
+  "didNftName": "Age Verification NFT",
+  "userAddress": "0xaa266beb057eeba4f686ef40ab0a8b96da69922fa4f548f2828c441b74398046"
 }
 ```
 
-**Response:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `enclaveTxDigest` | string | Transaction digest from ZK enclave verification |
+| `didVerifiedId` | string | The DID NFT object ID that was verified |
+| `didNftName` | string (optional) | Human-readable name of the NFT |
+| `userAddress` | string | Sui address of user who verified |
+
+**Success Response (200):**
 ```json
 {
   "success": true,
   "message": "NFT payment settled successfully",
   "data": {
-    "digest": "ABC123...",
-    "nftId": "0x1234...",
+    "enclaveTxDigest": "BHKjhBHFyvZZPjpSxLCR5MqHCjKxHPJvqxKQHKjV9H9V",
+    "didVerifiedId": "0x35849ea49b6e4abfd3628d33cca0c6a3a5ba05c05e0aa1f6d52cf3105cfd2f10",
+    "didNftName": "Age Verification NFT",
     "protocolUid": 1000,
+    "protocolName": "test",
+    "protocolAddress": "0xaa266beb057eeba4f686ef40ab0a8b96da69922fa4f548f2828c441b74398046",
+    "userAddress": "0xaa266beb057eeba4f686ef40ab0a8b96da69922fa4f548f2828c441b74398046",
+    "paymentTxDigest": "AWGzdUXy9Cp3Z8XcMeqh2oAGwPmFoXXjSnBek2ydd3UN",
     "settlementAmount": 3000000,
-    "explorerUrl": "https://suiscan.xyz/testnet/tx/ABC123..."
+    "explorerUrl": "https://suiscan.xyz/testnet/tx/AWGzdUXy9Cp3Z8XcMeqh2oAGwPmFoXXjSnBek2ydd3UN"
   }
+}
+```
+
+**Error Response (409 - Already Settled):**
+```json
+{
+  "success": false,
+  "error": "DID NFT has already been settled",
+  "data": { /* existing settlement record */ }
 }
 ```
 
@@ -104,9 +203,40 @@ Settle an NFT payment on-chain.
 
 Check if an NFT has been settled.
 
+**Response:**
+```json
+{
+  "success": true,
+  "settled": true,
+  "data": {
+    "id": 1,
+    "enclave_tx_digest": "BHKjhBHFyvZZPjpSxLCR5MqHCjKxHPJvqxKQHKjV9H9V",
+    "did_verified_id": "0x35849ea...",
+    "payment_tx_digest": "AWGzdUXy...",
+    "created_at": "2025-11-22T07:00:00.000Z"
+  }
+}
+```
+
+### GET `/api/settlement/user/:userAddress`
+
+Get all settlements for a user.
+
 ### GET `/api/settlement/health`
 
 Health check endpoint.
+
+```json
+{
+  "success": true,
+  "status": "healthy",
+  "adminAddress": "0xaa266beb...",
+  "packageId": "0xac8705fa...",
+  "protocolUid": 1000,
+  "protocolName": "test",
+  "timestamp": "2025-11-22T07:00:00.000Z"
+}
+```
 
 ## Contract Information
 
@@ -116,29 +246,92 @@ Health check endpoint.
 | Payment Registry | `0xf9f37bcd05810d2929e2446d498c63a218b3d18c73227e7964ffae936000830d` |
 | Payment Cap | `0x4a7cee5cddeef2bc33679880e1ef779f4c8077e1b20e1e3beee9e8644ecf9f8a` |
 | Protocol Vault | `0x000b0127fe611a68526c71d7335c9151cf18abe27711a4a7993ff8cea13556d5` |
+| Clock | `0x0000000000000000000000000000000000000000000000000000000000000006` |
+
+## Protocol Configuration
+
+| Setting | Value |
+|---------|-------|
+| Protocol Name | `test` |
 | Protocol UID | `1000` |
-
-## Settlement Fee
-
-- **Amount:** 0.003 SUI (3,000,000 MIST) per NFT settlement
-- Deducted from Protocol Vault and transferred to SuiVerify Treasury
+| Protocol Owner | `0xaa266beb057eeba4f686ef40ab0a8b96da69922fa4f548f2828c441b74398046` |
+| Settlement Fee | 0.003 SUI (3,000,000 MIST) |
+| Vault Balance | 0.006 SUI (after initial funding) |
 
 ## Database Schema
 
 ```sql
 CREATE TABLE nft_settlements (
   id SERIAL PRIMARY KEY,
-  tx_digest VARCHAR(64) NOT NULL UNIQUE,
+  -- Enclave verification
+  enclave_tx_digest VARCHAR(64) NOT NULL,
+  -- DID NFT
+  did_verified_id VARCHAR(66) NOT NULL UNIQUE,
+  did_nft_name VARCHAR(255),
+  -- Protocol info
   protocol_uid INTEGER NOT NULL,
-  nft_id VARCHAR(66) NOT NULL,
-  nft_name VARCHAR(255),
+  protocol_name VARCHAR(100),
   protocol_address VARCHAR(66),
+  -- User info
+  user_address VARCHAR(66) NOT NULL,
+  -- Payment settlement
+  payment_tx_digest VARCHAR(64) NOT NULL UNIQUE,
   settlement_amount BIGINT,
+  -- Metadata
   timestamp BIGINT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   status VARCHAR(20) DEFAULT 'success'
 );
 ```
+
+## Testing with cURL
+
+```bash
+# Health check
+curl http://localhost:3001/api/settlement/health
+
+# Settle NFT payment
+curl -X POST http://localhost:3001/api/settlement/settle \
+  -H "Content-Type: application/json" \
+  -d '{
+    "enclaveTxDigest": "BHKjhBHFyvZZPjpSxLCR5MqHCjKxHPJvqxKQHKjV9H9V",
+    "didVerifiedId": "0x35849ea49b6e4abfd3628d33cca0c6a3a5ba05c05e0aa1f6d52cf3105cfd2f10",
+    "didNftName": "Test DID NFT",
+    "userAddress": "0xaa266beb057eeba4f686ef40ab0a8b96da69922fa4f548f2828c441b74398046"
+  }'
+
+# Check settlement status
+curl http://localhost:3001/api/settlement/status/0x35849ea49b6e4abfd3628d33cca0c6a3a5ba05c05e0aa1f6d52cf3105cfd2f10
+
+# Get user's settlements
+curl http://localhost:3001/api/settlement/user/0xaa266beb057eeba4f686ef40ab0a8b96da69922fa4f548f2828c441b74398046
+```
+
+## Switching Between Settlement Functions
+
+To use `settle_nft_payment_with_vault` instead (with fund transfer), edit `src/controllers/settlement.controller.ts`:
+
+```typescript
+// Change target from:
+target: `${CONTRACT_CONFIG.packageId}::payment::settle_nft_payment`
+
+// To:
+target: `${CONTRACT_CONFIG.packageId}::payment::settle_nft_payment_with_vault`
+
+// And add vault argument after PaymentCap:
+tx.sharedObjectRef({
+  objectId: CONTRACT_CONFIG.protocol.vault.objectId,
+  initialSharedVersion: CONTRACT_CONFIG.protocol.vault.initialSharedVersion,
+  mutable: true,
+}),
+```
+
+## Verified Transactions
+
+| Function | TX Digest | Explorer |
+|----------|-----------|----------|
+| settle_nft_payment_with_vault | `BUHXUh196gum6t5y6eJFSJx7yeti69B2hbTMo66dLQD4` | [View](https://suiscan.xyz/testnet/tx/BUHXUh196gum6t5y6eJFSJx7yeti69B2hbTMo66dLQD4) |
+| settle_nft_payment | `AWGzdUXy9Cp3Z8XcMeqh2oAGwPmFoXXjSnBek2ydd3UN` | [View](https://suiscan.xyz/testnet/tx/AWGzdUXy9Cp3Z8XcMeqh2oAGwPmFoXXjSnBek2ydd3UN) |
 
 ## License
 
