@@ -4,8 +4,16 @@ import settlementRoutes from './routes/settlement.routes';
 
 const app: Application = express();
 
-// Middleware
-app.use(cors());
+// Middleware - CORS configuration for protocol-end
+app.use(cors({
+  origin: [
+    'http://localhost:3000',  // Protocol-end local dev
+    'http://127.0.0.1:3000',
+  ],
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+}));
 app.use(express.json());
 
 // Routes

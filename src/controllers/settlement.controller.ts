@@ -25,8 +25,11 @@ interface SettlementRequest {
   // DID NFT that was verified
   didVerifiedId: string;
   didNftName?: string;
-  // User who completed verification
+  // User who completed verification (zkLogin address)
   userAddress: string;
+  // Protocol info (passed from frontend)
+  protocolName: string;
+  protocolUid: number;
 }
 
 // Validate Sui object ID format (0x + 64 hex characters)
@@ -42,7 +45,7 @@ function isValidTxDigest(digest: string): boolean {
 // Settle NFT payment on-chain
 export async function settleNftPayment(req: Request, res: Response): Promise<void> {
   try {
-    const { enclaveTxDigest, didVerifiedId, didNftName, userAddress } = req.body as SettlementRequest;
+    const { enclaveTxDigest, didVerifiedId, didNftName, userAddress, protocolName, protocolUid } = req.body as SettlementRequest;
 
     // Validate required fields
     if (!enclaveTxDigest) {
@@ -69,6 +72,40 @@ export async function settleNftPayment(req: Request, res: Response): Promise<voi
       return;
     }
 
+    // Validate protocol info from request
+    if (!protocolName) {
+      res.status(400).json({
+        success: false,
+        error: 'protocolName is required',
+      });
+      return;
+    }
+
+    if (protocolUid === undefined || protocolUid === null) {
+      res.status(400).json({
+        success: false,
+        error: 'protocolUid is required',
+      });
+      return;
+    }
+
+    // Security check: Validate that passed protocol matches configured protocol
+    if (protocolUid !== CONTRACT_CONFIG.protocol.uid) {
+      res.status(403).json({
+        success: false,
+        error: `Invalid protocol UID. Expected ${CONTRACT_CONFIG.protocol.uid}, got ${protocolUid}`,
+      });
+      return;
+    }
+
+    if (protocolName !== protocolConfig.protocol.name) {
+      res.status(403).json({
+        success: false,
+        error: `Invalid protocol name. Expected "${protocolConfig.protocol.name}", got "${protocolName}"`,
+      });
+      return;
+    }
+
     // Validate DID NFT ID format
     if (!isValidSuiId(didVerifiedId)) {
       res.status(400).json({
@@ -78,7 +115,7 @@ export async function settleNftPayment(req: Request, res: Response): Promise<voi
       return;
     }
 
-    // Validate user address format
+    // Validate user address format (zkLogin address)
     if (!isValidSuiId(userAddress)) {
       res.status(400).json({
         success: false,
@@ -109,9 +146,10 @@ export async function settleNftPayment(req: Request, res: Response): Promise<voi
     }
 
     console.log(`\n=== Processing Settlement ===`);
+    console.log(`Protocol: ${protocolName} (UID: ${protocolUid})`);
     console.log(`Enclave TX: ${enclaveTxDigest}`);
     console.log(`DID NFT: ${didVerifiedId}`);
-    console.log(`User: ${userAddress}`);
+    console.log(`User (zkLogin): ${userAddress}`);
 
     // Build the transaction
     const tx = new Transaction();
