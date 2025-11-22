@@ -12,6 +12,8 @@ import {
   isNftSettled,
   getSettlementByNftId,
   getSettlementsByUser,
+  getSettlementById,
+  getAllSettlements,
   SettlementRecord,
 } from '../services/database.service';
 import protocolConfig from '../../data/protocol-config.json';
@@ -334,4 +336,119 @@ export async function healthCheck(req: Request, res: Response): Promise<void> {
     protocolName: protocolConfig.protocol.name,
     timestamp: new Date().toISOString(),
   });
+}
+
+// Get single settlement by database ID
+export async function getSingleSettlement(req: Request, res: Response): Promise<void> {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      res.status(400).json({
+        success: false,
+        error: 'id is required',
+      });
+      return;
+    }
+
+    const numericId = parseInt(id, 10);
+    if (isNaN(numericId) || numericId < 1) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid id format. Expected positive integer',
+      });
+      return;
+    }
+
+    const settlement = await getSettlementById(numericId);
+
+    if (settlement) {
+      res.status(200).json({
+        success: true,
+        data: settlement,
+      });
+    } else {
+      res.status(404).json({
+        success: false,
+        error: `Settlement with id ${numericId} not found`,
+      });
+    }
+  } catch (error) {
+    console.error('Error getting settlement by id:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Internal server error',
+    });
+  }
+}
+
+// Get all settlements (with optional pagination)
+// Query params: limit, page (or offset)
+export async function getBulkSettlements(req: Request, res: Response): Promise<void> {
+  try {
+    const { limit, page, offset } = req.query;
+
+    let queryLimit: number | undefined;
+    let queryOffset: number | undefined;
+
+    // Parse limit
+    if (limit !== undefined) {
+      queryLimit = parseInt(limit as string, 10);
+      if (isNaN(queryLimit) || queryLimit < 1) {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid limit. Expected positive integer',
+        });
+        return;
+      }
+    }
+
+    // Parse offset (either direct offset or calculated from page)
+    if (offset !== undefined) {
+      queryOffset = parseInt(offset as string, 10);
+      if (isNaN(queryOffset) || queryOffset < 0) {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid offset. Expected non-negative integer',
+        });
+        return;
+      }
+    } else if (page !== undefined && queryLimit !== undefined) {
+      const pageNum = parseInt(page as string, 10);
+      if (isNaN(pageNum) || pageNum < 1) {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid page. Expected positive integer',
+        });
+        return;
+      }
+      queryOffset = (pageNum - 1) * queryLimit;
+    }
+
+    const result = await getAllSettlements({
+      limit: queryLimit,
+      offset: queryOffset,
+    });
+
+    res.status(200).json({
+      success: true,
+      total: result.total,
+      count: result.settlements.length,
+      ...(queryLimit !== undefined && {
+        pagination: {
+          limit: queryLimit,
+          offset: queryOffset || 0,
+          page: queryOffset !== undefined && queryLimit ? Math.floor(queryOffset / queryLimit) + 1 : 1,
+          totalPages: queryLimit ? Math.ceil(result.total / queryLimit) : 1,
+        },
+      }),
+      data: result.settlements,
+    });
+  } catch (error) {
+    console.error('Error getting all settlements:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Internal server error',
+    });
+  }
 }

@@ -162,6 +162,57 @@ export async function getSettlementsByUser(userAddress: string): Promise<Settlem
   }
 }
 
+// Get settlement by database ID (serial number)
+export async function getSettlementById(id: number): Promise<SettlementRecord | null> {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(
+      'SELECT * FROM nft_settlements WHERE id = $1',
+      [id]
+    );
+    return result.rows[0] || null;
+  } finally {
+    client.release();
+  }
+}
+
+// Get all settlements with optional pagination
+// If no limit/offset provided, returns all records
+export async function getAllSettlements(options?: {
+  limit?: number;
+  offset?: number;
+}): Promise<{ settlements: SettlementRecord[]; total: number }> {
+  const client = await pool.connect();
+  try {
+    // Get total count
+    const countResult = await client.query('SELECT COUNT(*) as total FROM nft_settlements');
+    const total = parseInt(countResult.rows[0].total, 10);
+
+    // Build query with optional pagination
+    let query = 'SELECT * FROM nft_settlements ORDER BY id ASC';
+    const params: number[] = [];
+
+    if (options?.limit !== undefined) {
+      query += ` LIMIT $${params.length + 1}`;
+      params.push(options.limit);
+    }
+
+    if (options?.offset !== undefined) {
+      query += ` OFFSET $${params.length + 1}`;
+      params.push(options.offset);
+    }
+
+    const result = await client.query(query, params);
+
+    return {
+      settlements: result.rows,
+      total,
+    };
+  } finally {
+    client.release();
+  }
+}
+
 // Test database connection
 export async function testConnection(): Promise<boolean> {
   try {
